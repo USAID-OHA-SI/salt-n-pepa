@@ -245,17 +245,6 @@
     filter(pepfar_accel == T) %>%
     pull(country)
 
-  # Extract admin 0 and 1 for basemap
-  admin0 <- spdf_pepfar %>%
-    filter(regionorcountry_name == "Cameroon",
-           orgunit_label == "country")
-
-  admin0 %>% gview
-
-  admin1 <- spdf_pepfar %>%
-    filter(regionorcountry_name == .cntry,
-           orgunit_label == "prioritization")
-
   push_cntries %>%
     nth(7) %>%
     walk(function(.cntry) {
