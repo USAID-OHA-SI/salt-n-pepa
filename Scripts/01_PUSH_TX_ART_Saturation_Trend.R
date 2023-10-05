@@ -21,8 +21,8 @@
   library(scales)
   library(ggtext)
   library(sf)
-  library(ggrepel)
-  library(ggnewscale)
+  #library(ggrepel)
+  #library(ggnewscale)
   library(patchwork)
   library(glue)
 
@@ -68,18 +68,114 @@
 
 # FUNCTIONS ----
 
+  #' @title generate coverage map
+  #'
+  #'
+  generate_cov <- function(.data, terr, spdf, cntry) {
+
+    # Extract admin 0 and 1 for base map
+    admin0 <- spdf %>%
+      filter(str_trim(regionorcountry_name) == str_trim(cntry),
+             orgunit_label == "country")
+
+    admin1 <- spdf %>%
+      filter(str_trim(regionorcountry_name) == str_trim(cntry),
+             orgunit_label == "prioritization") %>%
+      clean_column(colname = "orgunit_name")
+
+    # Filter country orgs
+    .data <- .data %>%
+      filter(regionorcountry_name == cntry)
+
+    lbls <- .data %>%
+      st_drop_geometry() %>%
+      distinct(orgunit_label)
+
+    if (length(lbls) > 1 & "country" %in% lbls) {
+      .data <- .data %>%
+        filter(orgunit_label != "country")
+    }
+
+    # Produce basemap
+    basemap <- terrain_map(countries = admin0,
+                           adm0 = admin0,
+                           adm1 = admin1,
+                           mask = TRUE,
+                           terr = terr)
+
+    # Return base map only when there is no data
+
+    if (nrow(.data) == 0) return(basemap)
+
+    # Generate cov map
+
+    map_cov <- basemap +
+      geom_sf(data = .data,
+              aes(fill = agency_color),
+              lwd = .3,
+              color = grey10k) +
+      geom_sf(data = admin0,
+              colour = grey10k,
+              fill = NA,
+              size = 1.5) +
+      geom_sf(data = admin0,
+              colour = grey90k,
+              fill = NA,
+              size = .3) +
+      # geom_sf_text(data = .data,
+      #              aes(label = str_replace_all(psnu, " ", "\n"),
+      #                  color = label_color),
+      #              size = 2) +
+      scale_fill_identity() +
+      #scale_color_identity() +
+      labs(x = "", y = "",
+           title = glue("{str_to_upper(cntry)} - AGENCIES COVERAGE"),
+           subtitle = glue("<span style='color:{denim}'>**USAID**</span>, <span style='color:{denim_light}'>**CDC**</span> & <span style='color:{moody_blue}'>**1+ AGENCY**</span>")) +
+      si_style_map() +
+      theme(legend.position = "top",
+            legend.title = element_blank(),
+            plot.subtitle = element_markdown())
+
+    if (cntry == "South Africa") {
+      map_cov <- map_cov +
+        ggplot2::xlim(c(15, 35)) +
+        ggplot2::ylim(c(-38, -20))
+    }
+
+    return(map_cov)
+  }
+
   #' @title generate map
   #'
-  generate_map <- function(.data, terr, admin0, admin1) {
+  generate_map <- function(.data, terr, spdf, cntry) {
 
-    # Params
+    # Param
+
     max <- .data %>%
       pull(art_sat) %>%
       max(na.rm = T)
 
+    has_data <- ifelse(max == -Inf, F, T)
+
     print(glue("Max ART SAT = {max}"))
 
     max <- ifelse(max < 1, 1, max)
+
+    # Geom
+
+    # Extract admin 0 and 1 for base map
+    admin0 <- spdf %>%
+      filter(regionorcountry_name == cntry,
+             orgunit_label == "country")
+
+    admin1 <- spdf %>%
+      filter(regionorcountry_name == cntry,
+             orgunit_label == "prioritization")
+
+    spdf_art <- .data %>%
+      filter(regionorcountry_name == cntry,
+             str_detect(orgunit_name, "_Mil", negate = T),
+             period == meta$curr_pd)
 
     # Produce basemap
     basemap <- terrain_map(countries = admin0,
@@ -92,7 +188,8 @@
       geom_sf(data = .data,
               aes(fill = art_sat),
               lwd = .3,
-              color = grey10k) +
+              color = grey10k,
+              show.legend = has_data) +
       scale_fill_si(
         palette = "burnt_siennas",
         discrete = FALSE,
@@ -111,10 +208,10 @@
               fill = NA,
               size = .3) +
       geom_sf_text(data = .data,
-                   aes(label = paste0(psnu, "\n(",
-                                      percent(art_sat, 1),
-                                      ")")),
-                   size = 3,
+                   aes(label = case_when(
+                     is.na(art_sat) ~ psnu,
+                     TRUE ~ paste0(psnu, "\n(", percent(art_sat, 1), ")"))),
+                   size = 2,
                    color = grey10k) +
       labs(x = "", y = "") +
       si_style_map() +
@@ -122,6 +219,12 @@
             legend.title = element_blank(),
             legend.key.height = unit(.4, "cm"),
             legend.key.width = unit(1.5, "cm"))
+
+    if (cntry == "South Africa") {
+      map_art_sat <- map_art_sat +
+        ggplot2::xlim(c(15, 35)) +
+        ggplot2::ylim(c(-38, -20))
+    }
 
     return(map_art_sat)
   }
@@ -196,7 +299,7 @@
     filter(pepfar_accel == T) %>%
     pull(country)
 
-  # Orgunits attributes
+  # Orgunits level
 
   df_levels <- get_levels(
       username = datim_user(),
@@ -207,6 +310,8 @@
       names_to = "orgunit_label",
       values_to = "orgunit_level"
     )
+
+  # Orgunits attributes
 
   df_attrs <- push_cntries %>%
     map_dfr(~grabr::datim_orgunits(
@@ -225,15 +330,15 @@
     rename_with(.cols = contains("_internal_id"),
                 .fn = ~str_replace(.x, "internal_id", "uid")) %>%
     relocate(orgunit_label, .after = orgunit_level) %>%
-    filter(orgunit_label == "prioritization",
-           str_detect(orgunit_name, "_Mil", negate = T))
+    select(-contains(c("_parent", "_code", "moh"))) %>%
+    filter(str_detect(orgunit_name, "_Mil", negate = T))
 
   df_push_attrs %>% glimpse()
   df_push_attrs %>% distinct(regionorcountry_name)
 
 # MUNGE ----
 
-  # GEO
+  # GEO - Append Orgunit attributes (cntry & psnu only)
 
   spdf_pepfar <- spdf_pepfar %>%
     left_join(df_push_attrs, by = c("uid" = "orgunit_uid")) %>%
@@ -241,7 +346,7 @@
 
   spdf_pepfar %>%
     st_drop_geometry() %>%
-    distinct(regionorcountry_name, orgunit_name, orgunit_label)
+    distinct(orgunit_label)
 
   # PLHIV
 
@@ -261,7 +366,28 @@
     pivot_wider(names_from = indicator, values_from = value) %>%
     rename_with(str_to_lower)
 
-  df_plhiv %>% distinct(country)
+  # Agency coverage
+
+  df_cov <- df_psnu %>%
+    filter(fiscal_year %in% c(meta$curr_fy),
+           country %in% push_cntries,
+           funding_agency %ni% c("Dedup", "Default"),
+           str_detect(psnu, "_Mil", negate = TRUE),
+           indicatortype == "DSD",
+           !is.na(cumulative)) %>%
+    distinct(country, funding_agency, psnuuid, psnu) %>%
+    clean_agency()
+
+  df_cov <- df_cov %>%
+    group_by(country, psnuuid, psnu) %>%
+    mutate(
+      funding_agency = case_when(
+        n_distinct(funding_agency) > 1 ~ paste(funding_agency, collapse = ", "),
+        TRUE ~ funding_agency
+      )) %>%
+    ungroup() %>%
+    clean_psnu() %>%
+    distinct(country, funding_agency, psnuuid, psnu)
 
   # Viral Load
 
@@ -291,8 +417,6 @@
     ungroup() %>%
     rename_with(str_to_lower)
 
-  df_vl %>% distinct(country)
-
   # TX Saturation
 
   df_tx <- df_vl %>%
@@ -303,8 +427,6 @@
     mutate(art_sat = tx_curr / plhiv) %>%
     ungroup() %>%
     clean_psnu()
-
-  #df_tx %>% distinct(country)
 
   df_tx_viz <- df_tx %>%
     mutate(
@@ -323,8 +445,6 @@
         period2 = str_remove(period2, "Q.*"),
         period2 = fct_reorder(period2, pd_order))
 
-  #df_tx_viz %>% distinct(country, psnu)
-
   df_tx_viz %>%
     filter(period == meta$curr_pd) %>%
     count(country) %>%
@@ -336,36 +456,81 @@
     select(period, country, psnu, art_sat) %>%
     distinct() %>%
     pivot_wider(names_from = period, values_from = art_sat) %>%
-    mutate(psnu = paste0(psnu, " (", percent(FY23Q3, 1), ")"),
-           change_color = if_else(FY23Q3 - FY22Q4 > 0, burnt_sienna, usaid_red))
-
-  df_tx_art_trend %>% distinct(country)
-
-  spdf_pepfar %>%
-    st_drop_geometry() %>%
-    glimpse()
+    mutate(
+      psnu = case_when(
+        is.na(FY23Q3) ~ psnu,
+        TRUE ~ paste0(psnu, " (", percent(FY23Q3, 1), ")")
+      ),
+      change_color = if_else(FY23Q3 - FY22Q4 > 0, burnt_sienna, usaid_red)
+    )
 
   # Join to spatial file
+
   spdf_tx <- spdf_pepfar %>%
+    filter(orgunit_label == "prioritization") %>%
     left_join(df_tx_viz,
               by = c("regionorcountry_name" = "country",
                      "uid" = "psnuuid")) %>%
-    filter(period == meta$curr_pd)
+    filter(!is.na(art_sat), period == meta$curr_pd)
 
   spdf_vl <- spdf_pepfar %>%
+    filter(orgunit_label == "prioritization") %>%
     left_join(df_vl,
               by = c("regionorcountry_name" = "country",
-                     "uid" = "psnuuid"),
-              relationship = "many-to-many") %>%
-    filter(!is.na(tx_curr), period == meta$curr_pd)
+                     "uid" = "psnuuid")) %>%
+    filter(!is.na(vls), period == meta$curr_pd)
+
+  spdf_cov <- spdf_pepfar %>%
+    left_join(df_cov, by = c("regionorcountry_name" = "country", "uid" = "psnuuid")) %>%
+    mutate(
+      agency_color = case_when(
+        funding_agency == "USAID" ~ denim,
+        funding_agency == "CDC" ~ denim_light,
+        str_detect(funding_agency, ", ") ~ moody_blue,
+        TRUE ~ NA_character_
+      ),
+      label_color = case_when(
+        funding_agency == "USAID" ~ grey10k,
+        TRUE ~ grey90k
+      )) %>%
+    filter(!is.na(funding_agency))
 
 
 # VIZ ----
 
+  # COVERAGE ----
+
+  push_cntries %>%
+    nth(9) %>%
+    walk(function(.cntry) {
+
+      print(.cntry)
+
+      map_cov <- generate_cov(.data = spdf_cov,
+                              terr = terr,
+                              spdf = spdf_pepfar,
+                              cntry = .cntry)
+
+      si_save(
+        filename = file.path(
+          dir_graphics,
+          paste0(meta$curr_pd, " - ",
+                 str_to_upper(.cntry),
+                 " - AGENCY COVERAGE - ",
+                 format(Sys.Date(), "%Y%m%d"),
+                 ".png")),
+        plot = map_cov,
+        width = 10,
+        height = 5,
+        dpi = 320,
+        scale = 1.2)
+
+      return(map_cov)
+    })
+
   # ART SAT GAP ----
 
   push_cntries %>%
-    #nth(7) %>%
     walk(function(.cntry) {
 
       dots_art_change <- generate_dumbbell(.data = df_tx_art_trend, cntry = .cntry)
@@ -375,18 +540,23 @@
 
   # ART SAT VIZ ----
 
+
+  xcntry <- "Cote d'Ivoire"
+
+  spdf_pepfar %>%
+    filter(
+      regionorcountry_name == xcntry,
+      orgunit_label == "country"
+    ) %>%
+    gview()
+
+  spdf_tx %>%
+    filter(regionorcountry_name == xcntry,
+           period == meta$curr_pd)
+
   push_cntries %>%
-    nth(1) %>%
+    #nth(1) %>%
     walk(function(.cntry) {
-
-      # Extract admin 0 and 1 for base map
-      admin0 <- spdf_pepfar %>%
-        filter(regionorcountry_name == .cntry,
-               orgunit_label == "country")
-
-      admin1 <- spdf_pepfar %>%
-        filter(regionorcountry_name == .cntry,
-               orgunit_label == "prioritization")
 
       spdf_art <- spdf_tx %>%
         filter(regionorcountry_name == .cntry,
@@ -398,36 +568,68 @@
       # Stop here for no Data
       if (nrow(spdf_art) == 0) return(NULL)
 
-      map_art_sat <- generate_map(.data = spdf_art, terr, admin0, admin1)
+      map_art_sat <- generate_map(.data = spdf_art,
+                                  terr = terr,
+                                  spdf = spdf_pepfar,
+                                  cntry = .cntry)
 
       print(map_art_sat)
 
       # DOT Change
 
-      # dots_art_change <- generate_dumbbell(.data = df_tx_art_trend, cntry = .cntry)
-      #
-      # print(dots_art_change)
+      dots_art_change <- generate_dumbbell(.data = df_tx_art_trend, cntry = .cntry)
+
+      print(dots_art_change)
 
       # # Map + bar plot
-      # art_plot <- (map_art_sat + dots_art_change)
-      #
-      # print(art_plot)
-      #
-      # si_save(
-      #   filename = file.path(
-      #     dir_graphics,
-      #     paste0(meta$curr_pd, " - ",
-      #            str_to_upper(.cntry),
-      #            " - USAID",
-      #            " - ART Saturation Map and Plot - ",
-      #            format(Sys.Date(), "%Y%m%d"),
-      #            ".png")),
-      #   plot = art_plot,
-      #   width = 10,
-      #   height = 5,
-      #   dpi = 320,
-      #   scale = 1.2)
+      art_plot <- (map_art_sat + dots_art_change)
 
+      print(art_plot)
+
+      si_save(
+        filename = file.path(
+          dir_graphics,
+          paste0(meta$curr_pd, " - ",
+                 str_to_upper(.cntry),
+                 " - USAID",
+                 " - ART Saturation - ",
+                 format(Sys.Date(), "%Y%m%d"),
+                 ".png")),
+        plot = map_art_sat,
+        width = 10,
+        height = 5,
+        dpi = 320,
+        scale = 1.2)
+
+      si_save(
+        filename = file.path(
+          dir_graphics,
+          paste0(meta$curr_pd, " - ",
+                 str_to_upper(.cntry),
+                 " - USAID",
+                 " - ART Saturation Plot - ",
+                 format(Sys.Date(), "%Y%m%d"),
+                 ".png")),
+        plot = dots_art_change,
+        width = 10,
+        height = 5,
+        dpi = 320,
+        scale = 1.2)
+
+      si_save(
+        filename = file.path(
+          dir_graphics,
+          paste0(meta$curr_pd, " - ",
+                 str_to_upper(.cntry),
+                 " - USAID",
+                 " - ART Saturation Map and Plot - ",
+                 format(Sys.Date(), "%Y%m%d"),
+                 ".png")),
+        plot = art_plot,
+        width = 10,
+        height = 5,
+        dpi = 320,
+        scale = 1.2)
     })
 
 
