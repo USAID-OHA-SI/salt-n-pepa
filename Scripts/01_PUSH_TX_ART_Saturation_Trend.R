@@ -331,7 +331,7 @@
       values_to = "orgunit_level"
     )
 
-  # Orgunits attributes
+  # Org units attributes
 
   df_attrs <- push_cntries %>%
     map_dfr(~grabr::datim_orgunits(
@@ -417,10 +417,20 @@
     filter(
       fiscal_year %in% c(meta$curr_fy -1, meta$curr_fy),
       country %in% push_cntries,
-      funding_agency == agency,
+      funding_agency %ni% c("DUDUP", "DEFAULT"),
       indicator %in% c("TX_CURR", "TX_PVLS", "TX_PVLS_D"),
       standardizeddisaggregate %in% c("Total Numerator", "Total Denominator")
     ) %>%
+    group_by(country, psnuuid, psnu) %>%
+    mutate(
+      usaid_presence = case_when(
+        agency %in% funding_agency ~ 1,
+        TRUE ~ 0
+      )) %>%
+    ungroup()
+
+  df_vl <- df_vl %>%
+    filter(usaid_presence == 1) %>%
     reshape_msd() %>%
     filter(period_type == "results") %>%
     summarise(across(value, \(x) sum(x, na.rm = TRUE)),
