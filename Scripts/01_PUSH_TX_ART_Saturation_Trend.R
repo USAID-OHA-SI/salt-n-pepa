@@ -161,6 +161,10 @@
 
     max <- ifelse(max < 1, 1, max)
 
+    sep <- ifelse(max > 1.25, .5, .25)
+
+    no_psnu_in_lbls <- c("South Africa", "Zambia", "Tanzania", "Mozambique")
+
     # Geom
 
     # Extract admin 0 and 1 for base map
@@ -195,7 +199,7 @@
         discrete = FALSE,
         alpha = 0.7,
         na.value = NA,
-        breaks = seq(0, max, .25),
+        breaks = seq(0, max, sep),
         limits = c(0, max),
         labels = percent
       ) +
@@ -206,13 +210,29 @@
       geom_sf(data = admin0,
               colour = grey90k,
               fill = NA,
-              size = .3) +
-      geom_sf_text(data = .data,
-                   aes(label = case_when(
-                     is.na(art_sat) ~ psnu,
-                     TRUE ~ paste0(psnu, "\n(", percent(art_sat, 1), ")"))),
-                   size = 2,
-                   color = grey10k) +
+              size = .3)
+
+    # Remove psnu from labels
+    if (cntry %in% no_psnu_in_lbls) {
+
+      map_art_sat <- map_art_sat +
+        geom_sf_text(data = .data,
+                     aes(label = percent(art_sat, 1)),
+                     size = 2,
+                     color = grey10k)
+    }
+    else {
+
+      map_art_sat <- map_art_sat +
+        geom_sf_text(data = .data,
+                     aes(label = case_when(
+                       is.na(art_sat) ~ psnu,
+                       TRUE ~ paste0(psnu, "\n(", percent(art_sat, 1), ")"))),
+                     size = 2,
+                     color = grey10k)
+    }
+
+    map_art_sat <- map_art_sat +
       labs(x = "", y = "") +
       si_style_map() +
       theme(legend.position = "bottom",
@@ -467,10 +487,11 @@
   # Join to spatial file
 
   spdf_tx <- spdf_pepfar %>%
-    filter(orgunit_label == "prioritization") %>%
+    #filter(orgunit_label == "prioritization") %>%
     left_join(df_tx_viz,
               by = c("regionorcountry_name" = "country",
-                     "uid" = "psnuuid")) %>%
+                     "uid" = "psnuuid"),
+              relationship = "many-to-many") %>%
     filter(!is.na(art_sat), period == meta$curr_pd)
 
   spdf_vl <- spdf_pepfar %>%
@@ -501,7 +522,6 @@
   # COVERAGE ----
 
   push_cntries %>%
-    nth(9) %>%
     walk(function(.cntry) {
 
       print(.cntry)
@@ -528,31 +548,7 @@
       return(map_cov)
     })
 
-  # ART SAT GAP ----
-
-  push_cntries %>%
-    walk(function(.cntry) {
-
-      dots_art_change <- generate_dumbbell(.data = df_tx_art_trend, cntry = .cntry)
-
-      print(dots_art_change)
-    })
-
   # ART SAT VIZ ----
-
-
-  xcntry <- "Cote d'Ivoire"
-
-  spdf_pepfar %>%
-    filter(
-      regionorcountry_name == xcntry,
-      orgunit_label == "country"
-    ) %>%
-    gview()
-
-  spdf_tx %>%
-    filter(regionorcountry_name == xcntry,
-           period == meta$curr_pd)
 
   push_cntries %>%
     #nth(1) %>%
@@ -592,7 +588,7 @@
           paste0(meta$curr_pd, " - ",
                  str_to_upper(.cntry),
                  " - USAID",
-                 " - ART Saturation - ",
+                 " - ART Saturation Map - ",
                  format(Sys.Date(), "%Y%m%d"),
                  ".png")),
         plot = map_art_sat,
